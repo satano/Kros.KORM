@@ -1,4 +1,4 @@
-﻿using Kros.KORM.Converter;
+using Kros.KORM.Converter;
 using Kros.KORM.Exceptions;
 using Kros.KORM.Helper;
 using Kros.KORM.Injection;
@@ -21,6 +21,31 @@ namespace Kros.KORM.Metadata
     public partial class ConventionModelMapper : IModelMapper, IModelMapperInternal
     {
         private const string ConventionalPrimaryKeyName = "ID";
+
+        /// <summary>
+        /// Creates an instance of <see cref="ConventionModelMapper"/> configured with <typeparamref name="TConfiguration"/>.
+        /// </summary>
+        /// <typeparam name="TConfiguration">Configuration class.</typeparam>
+        /// <returns>Configured model mapper.</returns>
+        public static ConventionModelMapper Create<TConfiguration>() where TConfiguration : DatabaseConfigurationBase, new()
+            => Create(new TConfiguration());
+
+        /// <summary>
+        /// Creates an instance of <see cref="ConventionModelMapper"/> configured with <paramref name="configuration"/>.
+        /// </summary>
+        /// <param name="configuration">Configuration of mapper.</param>
+        /// <returns>Configured model mapper.</returns>
+        public static ConventionModelMapper Create(DatabaseConfigurationBase configuration)
+        {
+            var modelMapper = new ConventionModelMapper();
+            if (configuration != null)
+            {
+                var modelBuilder = new ModelConfigurationBuilder();
+                configuration.OnModelCreating(modelBuilder);
+                modelBuilder.Build(modelMapper);
+            }
+            return modelMapper;
+        }
 
         private readonly Dictionary<Type, EntityMapper> _entities = new Dictionary<Type, EntityMapper>();
         private readonly Dictionary<string, Expression> _queryFilters
@@ -146,23 +171,11 @@ namespace Kros.KORM.Metadata
 
         private TableInfo CreateTableInfo(Type modelType)
         {
-            _entities.TryGetValue(modelType, out EntityMapper entity);
-            IInjector injector = GetInjector(modelType);
-
             PropertyInfo[] allModelProperties = modelType.GetProperties(BindingFlags.Public | BindingFlags.Instance);
-            IEnumerable<PropertyInfo> columnProperties = allModelProperties
-                .Where(p =>
-                {
-                    return p.CanWrite
-                        && ((entity is null) || !entity.NoMap.Contains(p.Name))
-                        && (p.GetCustomAttributes(typeof(NoMapAttribute), true).Length == 0)
-                        && !injector.IsInjectable(p.Name);
-                });
-
-            IEnumerable<ColumnInfo> columns = columnProperties.Select(p => CreateColumnInfo(p, modelType));
+            IEnumerable<ColumnInfo> columns = CreateColumnInfos(modelType, allModelProperties);
             MethodInfo onAfterMaterialize = GetOnAfterMaterializeInfo(modelType);
-            var tableInfo = new TableInfo(columns, allModelProperties, onAfterMaterialize);
 
+            var tableInfo = new TableInfo(columns, allModelProperties, onAfterMaterialize);
             tableInfo.Name = GetTableName(tableInfo, modelType);
 
             SetQueryFilter(tableInfo);
@@ -177,6 +190,44 @@ namespace Kros.KORM.Metadata
             {
                 tableInfo.QueryFilter = queryFilter;
             }
+        }
+
+        private IEnumerable<ColumnInfo> CreateColumnInfos(Type modelType, PropertyInfo[] modelProperties)
+        {
+            _entities.TryGetValue(modelType, out EntityMapper entity);
+            IInjector injector = GetInjector(modelType);
+
+            foreach (PropertyInfo propInfo in modelProperties)
+            {
+                IConverter converter = GetConverterForProperty(entity, propInfo);
+                if ((converter != null) || PropertyIsMapped(propInfo, entity, injector))
+                {
+                    var columnInfo = new ColumnInfo
+                    {
+                        PropertyInfo = propInfo,
+                        Converter = converter
+                    };
+                    columnInfo.Name = GetColumnName(columnInfo, modelType);
+                    yield return columnInfo;
+                }
+            }
+        }
+
+        private static bool PropertyIsMapped(PropertyInfo propInfo, EntityMapper entity, IInjector injector)
+            => ((entity is null) || !entity.NoMap.Contains(propInfo.Name))
+                && (propInfo.GetCustomAttributes(typeof(NoMapAttribute), true).Length == 0)
+                && CanMapPropertyType(propInfo)
+                && !injector.IsInjectable(propInfo.Name);
+
+        private static bool CanMapPropertyType(PropertyInfo propInfo)
+        {
+            Type propType = propInfo.PropertyType;
+            return propInfo.CanWrite
+                && (propType.IsPrimitive
+                    || propType.IsEnum
+                    || propType.IsValueType
+                    || (propType == typeof(string))
+                    || (propType == typeof(byte[])));
         }
 
         private void SetPrimaryKey(TableInfo tableInfo, Type modelType)
@@ -236,31 +287,21 @@ namespace Kros.KORM.Metadata
             return name;
         }
 
-        private ColumnInfo CreateColumnInfo(PropertyInfo propertyInfo, Type modelType)
+        private static IConverter GetConverterForProperty(EntityMapper entity, PropertyInfo propertyInfo)
         {
-            var columnInfo = new ColumnInfo { PropertyInfo = propertyInfo };
-            columnInfo.Name = GetColumnName(columnInfo, modelType);
-
-            SetConverter(propertyInfo, columnInfo, modelType);
-            SetValueGenerator(columnInfo, modelType);
-
-            return columnInfo;
-        }
-
-        private void SetConverter(PropertyInfo propertyInfo, ColumnInfo columnInfo, Type modelType)
-        {
-            if (_entities.TryGetValue(modelType, out EntityMapper entity))
+            IConverter converter = null;
+            if (entity != null)
             {
-                if (entity.Converters.TryGetValue(columnInfo.PropertyInfo.Name, out IConverter converter)
-                    || entity.PropertyConverters.TryGetValue(propertyInfo.PropertyType, out converter))
+                if (!entity.Converters.TryGetValue(propertyInfo.Name, out converter))
                 {
-                    columnInfo.Converter = converter == NoConverter.Instance ? null : converter;
+                    entity.PropertyConverters.TryGetValue(propertyInfo.PropertyType, out converter);
                 }
             }
-            if (columnInfo.Converter is null)
+            if (converter is null)
             {
-                columnInfo.Converter = GetConverterFromAttribute(propertyInfo);
+                converter = GetConverterFromAttribute(propertyInfo);
             }
+            return converter == NoConverter.Instance ? null : converter;
         }
 
         private void SetValueGenerator(ColumnInfo columnInfo, Type modelType)
@@ -291,7 +332,7 @@ namespace Kros.KORM.Metadata
             return string.IsNullOrWhiteSpace(name) ? MapColumnName(columnInfo, modelType) : name;
         }
 
-        private IConverter GetConverterFromAttribute(PropertyInfo propertyInfo)
+        private static IConverter GetConverterFromAttribute(PropertyInfo propertyInfo)
         {
             var attributes = propertyInfo.GetCustomAttributes(typeof(ConverterAttribute), true);
             if (attributes.Length == 1)
@@ -304,7 +345,7 @@ namespace Kros.KORM.Metadata
             }
         }
 
-        private string GetName(ICustomAttributeProvider attributeProvider)
+        private static string GetName(ICustomAttributeProvider attributeProvider)
         {
             var aliasAttr = attributeProvider.GetCustomAttributes(typeof(AliasAttribute), true)
                 .FirstOrDefault() as AliasAttribute;

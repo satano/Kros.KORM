@@ -55,18 +55,7 @@ namespace Kros.KORM
                 }
             }
 
-            private ConventionModelMapper CreateModelMapper()
-            {
-                var modelMapper = new ConventionModelMapper();
-                if (_databaseConfiguration != null)
-                {
-                    var modelBuilder = new ModelConfigurationBuilder();
-                    _databaseConfiguration.OnModelCreating(modelBuilder);
-                    modelBuilder.Build(modelMapper);
-                }
-
-                return modelMapper;
-            }
+            private ConventionModelMapper CreateModelMapper() => ConventionModelMapper.Create(_databaseConfiguration);
 
             public IDatabaseBuilder UseConnection(KormConnectionSettings connectionString)
             {

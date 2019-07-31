@@ -6,13 +6,14 @@ using Kros.KORM.Materializer;
 using Kros.KORM.Metadata;
 using Kros.KORM.Metadata.Attribute;
 using System;
+using System.Collections.Generic;
 using System.Data;
 using System.Linq;
 using Xunit;
 
 namespace Kros.KORM.UnitTests.Metadata
 {
-    public class ModelMapperShould : IDisposable
+    public class ConventionModelMapperShould : IDisposable
     {
         #region Nested Types
 
@@ -37,6 +38,40 @@ namespace Kros.KORM.UnitTests.Metadata
 
             [NoMap()]
             public int Ignore { get; set; }
+        }
+
+        private class NestedPropertiesModel
+        {
+            public int IntProperty { get; set; }
+            public double DoubleProperty { get; set; }
+            public decimal DecimalProperty { get; set; }
+            public string StringProperty { get; set; }
+            public TestEnum EnumProperty { get; set; }
+            public DateTime DateTimeProperty { get; set; }
+            public DateTimeOffset DateTimeOffsetProperty { get; set; }
+            public byte[] ByteArrayProperty { get; set; }
+            public Address Address { get; set; }
+            public Address AddressWithConverter { get; set; }
+            [Converter(typeof(TestConverter))]
+            public Address AddressWithAttributeConverter { get; set; }
+            public object ObjectProperty { get; set; }
+        }
+
+        private class Address
+        {
+            public string Street { get; set; }
+            public string City { get; set; }
+            public string Country { get; set; }
+        }
+
+        private class NestedPropertiesModelConfig : DatabaseConfigurationBase
+        {
+            public override void OnModelCreating(ModelConfigurationBuilder modelBuilder)
+            {
+                base.OnModelCreating(modelBuilder);
+                modelBuilder.Entity<NestedPropertiesModel>()
+                    .Property(entity => entity.AddressWithConverter).UseConverter<TestConverter>();
+            }
         }
 
         private class NoPrivateKeyModel
@@ -186,6 +221,32 @@ namespace Kros.KORM.UnitTests.Metadata
             columns[3].Name.Should().Be("PropertyDouble");
             columns[4].Name.Should().Be("PropertyEnum");
             columns[5].Name.Should().Be("DataTypeProperty");
+        }
+
+        [Fact]
+        public void NotMapReferencePropertiesWithoutConverter()
+        {
+            var expectedColumns = new List<ColumnInfo>(new[] {
+                new ColumnInfo() { Name = nameof(NestedPropertiesModel.IntProperty) },
+                new ColumnInfo() { Name = nameof(NestedPropertiesModel.DoubleProperty) },
+                new ColumnInfo() { Name = nameof(NestedPropertiesModel.DecimalProperty) },
+                new ColumnInfo() { Name = nameof(NestedPropertiesModel.StringProperty) },
+                new ColumnInfo() { Name = nameof(NestedPropertiesModel.EnumProperty) },
+                new ColumnInfo() { Name = nameof(NestedPropertiesModel.DateTimeProperty) },
+                new ColumnInfo() { Name = nameof(NestedPropertiesModel.DateTimeOffsetProperty) },
+                new ColumnInfo() { Name = nameof(NestedPropertiesModel.ByteArrayProperty) },
+                new ColumnInfo() { Name = nameof(NestedPropertiesModel.AddressWithConverter) },
+                new ColumnInfo() { Name = nameof(NestedPropertiesModel.AddressWithAttributeConverter) }
+            });
+            var modelMapper = ConventionModelMapper.Create<NestedPropertiesModelConfig>();
+
+            TableInfo tableInfo = modelMapper.GetTableInfo<NestedPropertiesModel>();
+
+            tableInfo.Columns.Should().BeEquivalentTo(expectedColumns, cfg =>
+            {
+                cfg.Including(info => info.Name);
+                return cfg;
+            });
         }
 
         [Fact]
